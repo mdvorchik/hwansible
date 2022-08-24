@@ -1,0 +1,76 @@
+---
+  - name: Install nginx and upload my data
+    hosts: all
+    become: yes
+
+    vars:
+      source_file: ./service_state
+      destin_file: /opt/service_state
+      temp_destin_file: /opt/temp_service_state
+
+    tasks:
+
+    - name: Update apt repo and cache
+      apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
+
+    - name: Upgrade all apt packages
+      apt: upgrade=dist force_apt_get=yes
+
+    - name: Install nginx for Debian
+      apt: name=nginx state=latest
+
+    - name: Copy nginx config step 1
+      copy: src=nginx.conf dest=/etc/nginx/nginx.conf
+
+    - name: Copy nginx config step 2
+      copy: src=myserver.conf dest=/etc/nginx/conf.d/myserver.conf
+
+    - name: Copy service data
+      copy: src={{ source_file }} dest={{ temp_destin_file }} mode=0555
+
+    - name: Get first string of service_state
+      shell: head -n 1 {{ destin_file }}
+      register: service_state_first_string
+
+    - name: Debug first string of service_state
+      debug:
+        var: service_state_first_string.stdout
+
+    - name: Get first string of temp_service_state
+      shell: head -n 1 {{ temp_destin_file }}
+      register: temp_service_state_first_string
+
+    - name: Debug first string of temp_service_state
+      debug:
+        var: temp_service_state_first_string.stdout   
+
+    - name: Write service data
+      copy: src={{ source_file }} dest={{ destin_file }} mode=0555
+      when: service_state_first_string.stdout != temp_service_state_first_string.stdout
+      notify: Restart nginx
+
+    - name: Start nginx and make it enable on boot
+      service: name=nginx state=started enabled=yes
+
+    - name: Add cron task
+      ansible.builtin.cron:
+        name: "Update service_state"
+        job: 'sed -i "s/is .*$/is $(($(ps -o etimes= -p $(cat /var/run/nginx.pid)) / 60)) minutes/" /opt/service_state'
+
+    - meta: flush_handlers
+
+    - name: Check service_state changed by cron
+      shell: tail -n 1 {{ destin_file }}
+      register: output
+      delay: 10
+      retries: 100
+      until: output.stdout.find("Service uptime is 0 minutes") != false
+
+    - name: Print service_state changed by cron
+      debug:
+        var: output.stdout
+
+    handlers:
+    - name: Restart nginx
+      service: name=nginx state=restarted
+
